@@ -1,0 +1,200 @@
+############################################################################# 1st pipeline
+kind: pipeline
+type: kubernetes
+name: environment
+
+steps:
+- name: available
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - helm status nginx-ingress-controller
+    - helm status postgresql-ha
+    - helm status nats
+  when:
+    event:
+    - tag
+
+- name: 1st-deploy
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - helm repo add bitnami https://charts.bitnami.com/bitnami
+    - helm repo update
+    
+    - helm install nginx-ingress-controller \
+        --set defaultBackend.enabled=false \
+        --set rbac.create=true \
+        bitnami/nginx-ingress-controller
+    
+    - helm install postgresql-ha \
+        --set postgresql.username=postgres \
+        --set postgresql.password=bcx123 \
+        --set postgresql.database=foodtohave \
+        --set postgresql.syncReplication=true \
+        bitnami/postgresql-ha
+
+    - helm install nats \
+        --set auth.user=nats_client \
+        --set auth.password=bcx123 \
+        bitnami/nats
+  when:
+    status:
+    - failure
+    event:
+    - tag
+---
+############################################################################# 2nd pipeline
+kind: pipeline
+type: kubernetes
+name: environment-rollout-status
+
+steps:
+- name: rollout-status
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - kubectl rollout status deployment nginx-ingress-controller
+    
+    - kubectl rollout status deployment postgresql-ha-pgpool
+    - kubectl rollout status statefulset postgresql-ha-postgresql
+
+    - kubectl rollout status statefulset nats
+  when:
+    event:
+    - tag
+    
+depends_on:
+- environment
+---
+############################################################################# 3rd pipeline
+kind: pipeline
+type: kubernetes
+name: bcxstudio-process
+
+steps:
+- name: admin-image
+  image: plugins/docker
+  settings:
+    username:
+      from_secret: DockerID
+    password:
+      from_secret: Password
+    repo: bcxstudio/admin-server
+    tags: ${DRONE_TAG}
+    dockerfile: dockerfile.admin
+  when:
+    event:
+    - tag
+    
+- name: admin-status
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - kubectl get deployment admin-server-deployment
+  when:
+    event:
+    - tag
+
+- name: 1st-admin-deploy
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - kubectl create -f k8s/admin-server.deployment.yaml
+    - kubectl rollout status deployment admin-server-deployment
+    - kubectl create -f k8s/admin-server-cluster-ip.service.yaml
+  when:
+    status:
+    - failure
+    event:
+    - tag
+
+- name: updated-admin-deploy
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - kubectl set image deployment admin-server-deployment admin-server=bcxstudio/admin-server:${DRONE_TAG} --record
+  when:
+    event:
+    - tag
+    
+depends_on:
+- environment-rollout-status
+---
+############################################################################# 4th pipeline
+kind: pipeline
+type: kubernetes
+name: rollback
+
+steps:
+- name: admin-rollout-status
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - kubectl rollout status deployment admin-server-deployment
+  when:
+    event:
+    - tag
+
+- name: admin-deploy-rollback
+  image: bcxstudio/kubectl-helm:latest
+  settings:
+    kubernetes_server:
+      from_secret: k8s_server
+    kubernetes_cert:
+      from_secret: k8s_cert
+    kubernetes_token:
+      from_secret: k8s_token
+  commands:
+    - kubectl rollout undo deployment admin-server-deployment
+  when:
+    status:
+    - failure
+    event:
+    - tag
+    
+depends_on:
+- bcxstudio-process
+

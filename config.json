@@ -1,0 +1,18 @@
+{
+    "exchanges": [
+        {
+            "name": "Binance",
+            "pairs": [
+                "BTCUSDT",
+                "ETHUSDT"
+            ]
+        },
+        {
+            "name": "Bybit",
+            "pairs": [
+                "BTCUSDT",
+                "ETHUSDT"
+            ]
+        }
+    ]
+}
